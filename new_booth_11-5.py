@@ -57,6 +57,7 @@ display_instruction_flag = True
 
 # Function definitions
 def button_callback(channel):
+    print("Button pressed callback triggered.")
     global capture_in_progress, last_button_press_time
     print("Button pressed. Checking if capture is already in progress...")
     current_time = time()
@@ -114,8 +115,9 @@ def enter_view_mode():
                         display_image(str(image_file))  # Display the image
                         sleep(PHOTO_INTERVAL)  # Wait for the duration of each frame
 
-                    if not view_mode_active:
-                        print("Exiting view mode...")
+                    if not GPIO.input(SWITCH_PIN):  # Check directly after displaying an image
+                        print("Switch toggled to DOWN position, exiting view mode...")
+                        view_mode_active = False
                         return
 
         # Optional: Add a short delay before repeating the entire process
@@ -162,10 +164,25 @@ def display_image(image_path, flash=False):
         window.fill((255, 255, 255))
         pygame.display.flip()
         sleep(0.1)
+
     print(f"Displaying image {image_path}...")
-    image = pygame.transform.scale(pygame.image.load(image_path).convert(), (screen_width, screen_height))
-    window.blit(image, (0, 0))
-    pygame.display.flip()
+
+    # Attempt to load the image with retries
+    max_retries = 5
+    for attempt in range(max_retries):
+        try:
+            image = pygame.transform.scale(pygame.image.load(image_path).convert(), (screen_width, screen_height))
+            window.blit(image, (0, 0))
+            pygame.display.flip()
+            break  # If the image is loaded successfully, break out of the loop
+        except pygame.error as e:
+            if attempt < max_retries - 1:
+                print(f"Failed to load image {image_path}, attempt {attempt + 1} of {max_retries}. Error: {e}")
+                sleep(0.5)  # Wait half a second before trying again
+            else:
+                print(f"Failed to load image {image_path} after {max_retries} attempts. Error: {e}")
+                # Handle the failure, possibly by skipping this image or shutting down the process
+
 
 def process_images_to_gif(image_paths):
     print("Processing images into GIF...")
@@ -184,40 +201,69 @@ def process_images_to_gif(image_paths):
 
 def create_animated_gif(image_paths):
     print("Creating animated GIF...")
-    images = [Image.open(str(image_path)) for image_path in image_paths]
+    # Load images and print progress
+    images = []
+    for i, image_path in enumerate(image_paths):
+        print(f"Loading image {i + 1} of {len(image_paths)}: {image_path}")
+        try:
+            images.append(Image.open(str(image_path)))
+        except IOError as e:
+            print(f"Error loading image {image_path}: {e}")
+            return None
+
     output_path = os.path.join(RECENT_GIFS_PATH, 'recent0.gif')
-    images[0].save(output_path, save_all=True, append_images=images[1:], loop=0, duration=GIF_DURATION)
-    print("Animated GIF created.")
+    print("Saving frames to GIF...")
+    try:
+        images[0].save(output_path, save_all=True, append_images=images[1:], loop=0, duration=GIF_DURATION)
+        print("Animated GIF created at:", output_path)
+    except IOError as e:
+        print(f"Error saving GIF: {e}")
+        return None
+
+    # Check if the GIF was actually created and is readable
+    if os.path.exists(output_path):
+        if os.access(output_path, os.R_OK):
+            print(f"GIF creation confirmed: {output_path} is readable.")
+        else:
+            print(f"Error: The GIF {output_path} is not readable. Check permissions.")
+            return None
+    else:
+        print(f"Error: The GIF {output_path} does not exist after saving attempt.")
+        return None
+
     return output_path
 
 def rename_and_archive_gifs(output_path):
     print("Renaming and archiving GIFs...")
-    # Shift the names of existing recent GIFs
+
+    # First, archive the new GIF before renaming others
+    if not os.path.isfile(output_path):
+        print(f"Error: The GIF {output_path} to be archived does not exist.")
+        return
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        archive_path = os.path.join(ARCHIVE_PATH, f'{timestamp}.gif')
+        print(f"Archiving recent GIF as {archive_path}...")
+        shutil.copy(output_path, archive_path)
+
+    # Now rename the existing recent GIFs
     for i in range(4, 0, -1):
         old_path = os.path.join(RECENT_GIFS_PATH, f'recent{i - 1}.gif')
         new_path = os.path.join(RECENT_GIFS_PATH, f'recent{i}.gif')
         if os.path.isfile(old_path):
             print(f"Renaming {old_path} to {new_path}...")
             shutil.move(old_path, new_path)
-    
-    # Copy the most recent GIF to the archive with a timestamped name
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    archive_path = os.path.join(ARCHIVE_PATH, f'{timestamp}.gif')
-    print(f"Archiving recent GIF as {archive_path}...")
-    shutil.copy(output_path, archive_path)
+
     
 def simulate_gif(image_paths):
     print("Simulating GIF...")
-    start_time = time()
-    while time() - start_time < NUM_PHOTOS * PHOTO_INTERVAL:
+    for _ in range(NUM_LOOPS_PER_GIF):  # Loop for a fixed number of iterations
         for image_path in image_paths:
-            if not running:
+            if not running:  # Check if the simulation should stop early
                 print("Stopping GIF simulation due to ESC key press...")
                 return
             display_image(image_path)
-            sleep(PHOTO_INTERVAL)
-            if time() - start_time >= NUM_PHOTOS * PHOTO_INTERVAL:
-                break
+            sleep(PHOTO_INTERVAL)  # Wait for the duration of each frame
     print("Finished simulating GIF.")
 
 def manage_image_directories():
