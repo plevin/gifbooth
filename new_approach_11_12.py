@@ -1,9 +1,17 @@
+import RPi.GPIO as GPIO
 import pygame
 import time
 import os
 import shutil
 from picamera import PiCamera
 import config
+from PIL import Image
+import datetime
+
+# GPIO setup
+BUTTON_PIN = 5
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(BUTTON_PIN, GPIO.IN, pull_up_down=GPIO.PUD_DOWN)
 
 # Initialize Pygame and create a window
 pygame.init()
@@ -14,6 +22,14 @@ pygame.display.set_caption('Photobooth')
 # Load sounds
 print("Loading sounds...")
 snap_sound = pygame.mixer.Sound(config.snap_path)
+
+def wait_for_button_press():
+    while True:
+        if not GPIO.input(BUTTON_PIN):  # Button is pressed (if using pull-up resistor)
+            break
+        if check_for_exit():
+            raise SystemExit
+        time.sleep(0.1)  # Debounce delay
 
 def clear_screen():
     screen.fill((0, 0, 0))
@@ -92,8 +108,26 @@ def manage_photo_sets():
         new_photo_path = os.path.join(new_set_path, f"photo{photo_number}.jpg")
         shutil.copy(current_photo_path, new_photo_path)
 
+def create_animated_gif(image_paths, output_path):
+    images = [Image.open(image_path) for image_path in image_paths if os.path.exists(image_path)]
+    if images:
+        images[0].save(output_path, save_all=True, append_images=images[1:], loop=0, duration=config.gif_frame_duration, optimize=True)
+        print(f"Animated GIF saved to {output_path}")
+
+def create_gif_from_recent_set():
+    # Assuming the most recent set is always 'set1' in 'recent_sets_path'
+    recent_set_path = os.path.join(config.recent_sets_path, "set1")
+    image_paths = [os.path.join(recent_set_path, f"photo{i}.jpg") for i in range(1, config.num_images + 1)]
+
+    # Generating a timestamped filename for the GIF
+    timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    gif_filename = f"{timestamp}.gif"
+    gif_path = os.path.join(config.archive_path, gif_filename)
+
+    create_animated_gif(image_paths, gif_path)
+
 def display_current_set():
-    for _ in range(config.num_loops_per_set):  # Looping through the current set
+    for _ in range(config.num_loops):  # Looping through the current set
         for photo_number in range(1, config.num_images + 1):
             current_photo_path = os.path.join(config.current_photos_path, f"photo{photo_number}.jpg")
             if os.path.exists(current_photo_path):
@@ -122,32 +156,64 @@ def check_for_exit():
             return True
     return False
 
-# Main execution
-try:
+def photobooth_sequence():
     print("Starting photo capture")
     capture_current_photos()
 
     print("Showing processing image")
     show_image_for_duration(config.processing_image_path, 3)
-
+    
     print("Managing photo sets")
     manage_photo_sets()
     
-    print("Showing current photo set") # Displays the current images as a simulated GIF
+    print("Creating a GIF for the archive")
+    create_gif_from_recent_set()
+
+    print("Showing current photo set")
     display_current_set()
-
-    # print("Displaying photo sets") # Displays the recent sets of photos
+    
+# Main execution
+# try:
+#    print("Starting photo capture")
+#    capture_current_photos()
+#    print("Showing processing image")
+#    show_image_for_duration(config.processing_image_path, 3)
+#    print("Managing photo sets")
+#    manage_photo_sets()
+#    print("Showing current photo set") # Displays the current images as a simulated GIF
+#    display_current_set()
+#    print("Creating a GIF for the archive") 
+#    create_gif_from_recent_set()  # Create an animated GIF from the recent set
+    # print("Displaying photo sets") # Displays the most recent sets of photos
     # display_photo_sets() 
+#    print("Showing processing image")
+#    show_image_for_duration(config.start_image_path, 0)
+#    print("Waiting for exit")
+#    while True:
+#        if check_for_exit():
+#            break
+#        time.sleep(0.1)  # Check for exit every 0.1 seconds
+#except KeyboardInterrupt:
+#    print("Program interrupted by user")
+#except Exception as e:
+#    print(f"An error occurred: {e}")
+# THIS IS THE OLD EXECUTION
 
-    print("Waiting for exit")
+
+# Main execution
+try:
     while True:
-        if check_for_exit():
-            break
-        time.sleep(0.1)  # Check for exit every 0.1 seconds
+        show_image_for_duration(config.start_image_path, 0)  # Show start image indefinitely
+        wait_for_button_press()  # Wait for button press to start photobooth
+        photobooth_sequence()  # Execute photobooth sequence
 
 except KeyboardInterrupt:
     print("Program interrupted by user")
+except SystemExit:
+    print("Exiting program")
 except Exception as e:
     print(f"An error occurred: {e}")
 
-pygame.quit()
+finally:
+    GPIO.cleanup()
+    pygame.quit()
